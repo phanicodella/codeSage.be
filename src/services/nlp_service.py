@@ -1,27 +1,41 @@
 # Path: codeSage.be/src/services/nlp_service.py
 
 import torch
-from transformers import AutoModelForSeq2SeqGeneration, pipeline
-from typing import List, Dict, Union, Optional
+from transformers import T5ForConditionalGeneration, AutoTokenizer, PreTrainedModel
+from typing import List, Dict, Union, Optional, Tuple
 import logging
 from pathlib import Path
 import os
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import threading
+import queue
 from ..models.tokenizer import CodeTokenizer
+import gc
 
 logger = logging.getLogger(__name__)
 
 class NLPService:
     """
-    Service for handling natural language processing tasks related to code analysis,
+    Production-ready service for handling natural language processing tasks related to code analysis,
     including code understanding, bug detection, and code generation.
     """
-
+    
+    # Class-level lock for thread-safe model operations
+    _model_lock = threading.Lock()
+    
+    # Queue for batch processing
+    _request_queue = queue.Queue()
+    
     def __init__(self, 
                  model_name: str = "Salesforce/codet5-base",
                  device: str = None,
-                 max_workers: int = 2):
+                 max_workers: int = 2,
+                 batch_size: int = 8,
+                 max_sequence_length: int = 512,
+                 cache_dir: Optional[str] = None,
+                 model_revision: str = "main"):
         """
         Initialize the NLP service with specified model and configurations.
 
@@ -29,48 +43,92 @@ class NLPService:
             model_name: Name of the pre-trained model to use
             device: Device to run the model on ('cuda' or 'cpu')
             max_workers: Maximum number of worker threads for parallel processing
+            batch_size: Size of batches for processing multiple requests
+            max_sequence_length: Maximum sequence length for tokenization
+            cache_dir: Directory to cache models
+            model_revision: Model revision/version to use
         """
         self.model_name = model_name
         self.max_workers = max_workers
+        self.batch_size = batch_size
+        self.max_sequence_length = max_sequence_length
+        self.model_revision = model_revision
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        self.cache_dir = Path(cache_dir or os.getenv('MODEL_CACHE_DIR', './models'))
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        try:
-            self._initialize_model()
-            self.tokenizer = CodeTokenizer(model_name)
-            logger.info(f"Successfully initialized NLP service with model: {model_name}")
-        except Exception as e:
-            logger.error(f"Failed to initialize NLP service: {str(e)}")
-            raise
-
-    def _initialize_model(self):
-        """Initialize the model and move it to the appropriate device"""
-        try:
-            # Try loading from local cache first
-            cache_dir = Path(os.getenv('MODEL_CACHE_DIR', './models'))
-            self.model = AutoModelForSeq2SeqGeneration.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                local_files_only=True,
-                cache_dir=cache_dir
-            )
-        except Exception as e:
-            logger.warning(f"Could not load model from cache: {str(e)}")
-            # Download and save to cache
-            self.model = AutoModelForSeq2SeqGeneration.from_pretrained(
-                self.model_name,
-                trust_remote_code=True,
-                cache_dir=cache_dir
-            )
+        # Initialize model and tokenizer
+        self._initialize_services()
         
-        self.model.to(self.device)
-        self.model.eval()
+        # Start batch processing worker
+        self._start_batch_worker()
+        
+        # Track model usage metrics
+        self.metrics = {
+            'requests_processed': 0,
+            'last_batch_time': None,
+            'average_processing_time': 0,
+            'errors': 0
+        }
+        
+        logger.info(f"NLP Service initialized with model: {model_name} on device: {self.device}")
 
-    def analyze_code_block(self, 
-                          code: str, 
-                          task: str = "understand",
-                          max_length: int = 512) -> Dict[str, Union[str, float]]:
+    def _initialize_services(self):
+        """Initialize model and tokenizer with error handling and retries"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self._initialize_model()
+                self.tokenizer = CodeTokenizer(self.model_name)
+                return
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to initialize NLP services after {max_retries} attempts")
+                    raise
+                logger.warning(f"Initialization attempt {attempt + 1} failed: {str(e)}. Retrying...")
+                self._cleanup()
+
+    def _initialize_model(self) -> None:
+        """Initialize the model with proper error handling and logging"""
+        try:
+            with self._model_lock:
+                model_path = self.cache_dir / self.model_name.replace('/', '_')
+                
+                if model_path.exists():
+                    logger.info("Loading model from local cache")
+                    self.model = T5ForConditionalGeneration.from_pretrained(
+                        model_path,
+                        trust_remote_code=True,
+                        local_files_only=True
+                    )
+                else:
+                    logger.info("Downloading model from Hugging Face")
+                    self.model = T5ForConditionalGeneration.from_pretrained(
+                        self.model_name,
+                        trust_remote_code=True,
+                        cache_dir=self.cache_dir,
+                        revision=self.model_revision
+                    )
+                    # Save model locally
+                    self.model.save_pretrained(model_path)
+                
+                self.model.to(self.device)
+                self.model.eval()
+                
+                # Enable gradient checkpointing for memory efficiency
+                if hasattr(self.model, 'gradient_checkpointing_enable'):
+                    self.model.gradient_checkpointing_enable()
+                
+        except Exception as e:
+            logger.error(f"Model initialization failed: {str(e)}")
+            raise RuntimeError(f"Failed to initialize model: {str(e)}")
+
+    async def analyze_code_block(self, 
+                               code: str, 
+                               task: str = "understand",
+                               max_length: Optional[int] = None) -> Dict[str, Union[str, float]]:
         """
-        Analyze a block of code for understanding, bugs, or improvements.
+        Analyze a block of code with proper error handling and resource management.
 
         Args:
             code: The code block to analyze
@@ -78,8 +136,12 @@ class NLPService:
             max_length: Maximum length of generated response
 
         Returns:
-            Dictionary containing analysis results
+            Dictionary containing analysis results and confidence scores
         """
+        if not code.strip():
+            raise ValueError("Empty code block provided")
+            
+        max_length = max_length or self.max_sequence_length
         task_prefixes = {
             "understand": "Explain the following code:\n",
             "detect_bugs": "Identify potential bugs in:\n",
@@ -90,112 +152,146 @@ class NLPService:
         input_text = f"{prefix}{code}"
         
         try:
-            inputs = self.tokenizer.encode(input_text, max_length=max_length)
-            
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    input_ids=inputs['input_ids'].to(self.device),
-                    attention_mask=inputs['attention_mask'].to(self.device),
-                    max_length=max_length,
-                    num_return_sequences=1,
-                    temperature=0.7,
-                    do_sample=True
-                )
-            
-            decoded_output = self.tokenizer.decode(outputs[0])
-            
-            return {
-                "task": task,
-                "analysis": decoded_output,
-                "confidence": self._calculate_confidence(outputs)
-            }
+            with self._model_lock:
+                with torch.no_grad():
+                    inputs = self.tokenizer.encode(
+                        input_text, 
+                        max_length=max_length,
+                        truncation=True,
+                        return_tensors="pt"
+                    ).to(self.device)
+                    
+                    outputs = self.model.generate(
+                        input_ids=inputs['input_ids'],
+                        attention_mask=inputs['attention_mask'],
+                        max_length=max_length,
+                        num_return_sequences=1,
+                        temperature=0.7,
+                        do_sample=True,
+                        top_p=0.95,
+                        repetition_penalty=1.2,
+                        early_stopping=True
+                    )
+                    
+                    decoded_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    
+                    # Calculate confidence scores
+                    confidence = self._calculate_confidence(outputs)
+                    
+                    self.metrics['requests_processed'] += 1
+                    
+                    return {
+                        "task": task,
+                        "analysis": decoded_output,
+                        "confidence": confidence,
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    
         except Exception as e:
+            self.metrics['errors'] += 1
             logger.error(f"Error analyzing code block: {str(e)}")
-            return {
-                "task": task,
-                "analysis": "Error analyzing code",
-                "error": str(e),
-                "confidence": 0.0
-            }
+            raise RuntimeError(f"Analysis failed: {str(e)}")
+        finally:
+            # Clean up GPU memory if needed
+            if self.device == 'cuda':
+                torch.cuda.empty_cache()
 
     def batch_analyze_code(self, 
                           code_blocks: List[str],
                           task: str = "understand") -> List[Dict[str, Union[str, float]]]:
-        """
-        Analyze multiple code blocks in parallel.
-
-        Args:
-            code_blocks: List of code blocks to analyze
-            task: Type of analysis to perform
-
-        Returns:
-            List of analysis results for each code block
-        """
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = [
-                executor.submit(self.analyze_code_block, code, task)
-                for code in code_blocks
-            ]
-            return [future.result() for future in futures]
+        """Process multiple code blocks in parallel with batching"""
+        results = []
+        for i in range(0, len(code_blocks), self.batch_size):
+            batch = code_blocks[i:i + self.batch_size]
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                batch_results = list(executor.map(
+                    lambda code: self.analyze_code_block(code, task),
+                    batch
+                ))
+                results.extend(batch_results)
+        return results
 
     def _calculate_confidence(self, outputs: torch.Tensor) -> float:
-        """
-        Calculate confidence score for model outputs.
-
-        Args:
-            outputs: Model output tensor
-
-        Returns:
-            Confidence score between 0 and 1
-        """
+        """Calculate confidence score for model outputs"""
         try:
-            logits = outputs.scores[0] if hasattr(outputs, 'scores') else None
-            if logits is not None:
+            if hasattr(outputs, 'scores'):
+                logits = outputs.scores[0]
                 probs = torch.softmax(logits, dim=-1)
                 return float(torch.max(probs).mean())
-            return 0.8  # Default confidence when scores aren't available
+            return self._calculate_alternative_confidence(outputs)
         except Exception:
             return 0.5
 
-    def save_analysis_cache(self, 
-                          cache_file: str,
-                          analysis_results: Dict[str, Dict]):
-        """
-        Save analysis results to cache file.
-
-        Args:
-            cache_file: Path to cache file
-            analysis_results: Dictionary of analysis results to cache
-        """
+    def _calculate_alternative_confidence(self, outputs: torch.Tensor) -> float:
+        """Alternative confidence calculation when scores aren't available"""
         try:
-            with open(cache_file, 'w') as f:
-                json.dump(analysis_results, f)
-        except Exception as e:
-            logger.error(f"Error saving analysis cache: {str(e)}")
+            # Use output probabilities distribution as a proxy for confidence
+            last_hidden = outputs.last_hidden_state
+            variance = torch.var(last_hidden, dim=-1).mean()
+            return float(1.0 / (1.0 + variance))
+        except Exception:
+            return 0.5
 
-    def load_analysis_cache(self, cache_file: str) -> Optional[Dict]:
-        """
-        Load cached analysis results.
+    def _start_batch_worker(self) -> None:
+        """Start background worker for processing batched requests"""
+        def worker():
+            while True:
+                try:
+                    batch = []
+                    try:
+                        while len(batch) < self.batch_size:
+                            item = self._request_queue.get_nowait()
+                            batch.append(item)
+                    except queue.Empty:
+                        pass
+                    
+                    if batch:
+                        start_time = datetime.now()
+                        self._process_batch(batch)
+                        self.metrics['last_batch_time'] = (datetime.now() - start_time).total_seconds()
+                except Exception as e:
+                    logger.error(f"Batch processing error: {str(e)}")
+                    
+        threading.Thread(target=worker, daemon=True).start()
 
-        Args:
-            cache_file: Path to cache file
-
-        Returns:
-            Dictionary of cached analysis results or None if cache doesn't exist
-        """
+    def _process_batch(self, batch: List[Dict]) -> None:
+        """Process a batch of requests"""
         try:
-            if os.path.exists(cache_file):
-                with open(cache_file, 'r') as f:
-                    return json.load(f)
+            with self._model_lock:
+                for item in batch:
+                    code = item['code']
+                    task = item.get('task', 'understand')
+                    callback = item.get('callback')
+                    
+                    try:
+                        result = self.analyze_code_block(code, task)
+                        if callback:
+                            callback(result)
+                    except Exception as e:
+                        if callback:
+                            callback({'error': str(e)})
         except Exception as e:
-            logger.error(f"Error loading analysis cache: {str(e)}")
-        return None
+            logger.error(f"Batch processing failed: {str(e)}")
 
-    def clear_gpu_memory(self):
-        """Clear GPU memory if using CUDA device"""
-        if self.device == 'cuda':
-            torch.cuda.empty_cache()
+    def get_metrics(self) -> Dict[str, Union[int, float, str]]:
+        """Get service metrics"""
+        return {
+            **self.metrics,
+            'device': self.device,
+            'model_name': self.model_name,
+            'queue_size': self._request_queue.qsize()
+        }
+
+    def _cleanup(self) -> None:
+        """Clean up resources"""
+        try:
+            with self._model_lock:
+                del self.model
+                torch.cuda.empty_cache()
+                gc.collect()
+        except Exception as e:
+            logger.error(f"Cleanup failed: {str(e)}")
 
     def __del__(self):
-        """Cleanup when the service is destroyed"""
-        self.clear_gpu_memory()
+        """Cleanup on destruction"""
+        self._cleanup()

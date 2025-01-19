@@ -40,3 +40,13 @@ psutil==5.9.8
 pytest==7.4.4
 pytest-asyncio==0.23.3
 pytest-mock==3.12.0
+
+# For code parsing and static analysis
+ast-comments==1.0.1
+radon==6.0.1  # For code complexity metrics
+
+# For file type detection and encoding
+python-magic==0.4.27
+
+# For efficient caching
+diskcache==5.6.3

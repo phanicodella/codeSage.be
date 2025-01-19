@@ -1,14 +1,13 @@
 # Path: codeSage.be/src/routes/api.py
-
-from flask import Blueprint, request, jsonify, current_app
+# Change these lines at the top:
 from typing import Dict, Any, Optional
 import logging
 from pathlib import Path
 import os
 from functools import wraps
-from ..services.file_crawler import FileCrawler
-from ..services.nlp_service import NLPService
-from ..services.response_formatter import ResponseFormatter, ResponseType, AnalysisResult
+from src.services.file_crawler import FileCrawler
+from src.services.nlp_service import NLPService
+from src.services.response_formatter import ResponseFormatter, ResponseType, AnalysisResult
 import jwt
 from datetime import datetime, timedelta
 

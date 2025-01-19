@@ -1,20 +1,19 @@
-# File path: E:\codeSage\codeSage.be\src\app.py
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from config import active_config
+from src.config import active_config
 import os
-from routes.api import api_bp
-from routes.visualization_routes import visualization
-from services.file_crawler import FileCrawler
-from services.nlp_service import NLPService
-from services.response_formatter import ResponseFormatter
-from services.visualization_service import VisualizationService
-from models.dci_engine import DCIEngine
-from services.visualization_update_handler import VisualizationUpdateHandler
+from src.routes.api import api_bp
+from src.routes.visualization_routes import visualization
+from src.services.file_crawler import FileCrawler
+from src.services.nlp_service import NLPService
+from src.services.response_formatter import ResponseFormatter
+from src.services.visualization_service import VisualizationService
+from src.models.dci_engine import DCIEngine
+from src.services.visualization_update_handler import VisualizationUpdateHandler
 import asyncio
 import logging
-from services.websocket_factory import websocket_factory
+from src.services.websocket_factory import websocket_factory
 
 logger = logging.getLogger(__name__)
 
