@@ -6,16 +6,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-.pytest_cache/
-.coverage
-htmlcov/
+*.pyc
 
 # IDE specific files
 .idea/
@@ -44,12 +35,6 @@ models/*
 !models/.gitkeep
 cache/*
 !cache/.gitkeep
-
-# Build files
-dist/
-build/
-*.egg-info/
-*.egg
 
 # Model files
 *.pt
@@ -82,10 +67,6 @@ Desktop.ini
 *.swo
 *~
 
-# Docker
-.docker/
-docker-compose.override.yml
-
 # JWT keys
 *.pem
 *.key
@@ -98,23 +79,6 @@ debug/
 config.local.json
 config.dev.json
 
-# Test coverage
-.coverage
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
-
-# Documentation build
-docs/_build/
-docs/build/
-
-# Virtual Environment
-.python-version
-.venv
-.venv/
-venv/
-ENV/
-
 # Keep empty directories
 !.gitkeep
+envvars.txt
