@@ -82,3 +82,4 @@ config.dev.json
 # Keep empty directories
 !.gitkeep
 envvars.txt
+.env

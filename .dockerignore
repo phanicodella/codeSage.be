@@ -1,0 +1,36 @@
+# Path: codeSage.be/.dockerignore
+
+# Version control
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv
+.env
+
+# Logs
+logs/*
+*.log
+
+# Data directories
+data/*
+!data/.gitkeep
+
+# Development files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Test files
+tests/
+*.test.py
+
+# Documentation
+docs/
+*.md
