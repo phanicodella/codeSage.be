@@ -18,6 +18,7 @@ class Config:
     CACHE_DIR = DATA_DIR / 'cache'
     MODEL_DIR = DATA_DIR / 'models'
     LOG_DIR = BASE_DIR / 'logs'
+    UPLOAD_DIR = BASE_DIR / 'uploads'
     
     # Application settings
     VERSION = "1.0.0"
@@ -48,7 +49,6 @@ class Config:
     MODEL_TOP_P = 0.95
     
     # File processing settings
-    MAX_FILE_SIZE_MB = 10
     ALLOWED_EXTENSIONS = {
         '.py', '.js', '.jsx', '.ts', '.tsx',
         '.java', '.cpp', '.hpp', '.c', '.h',
@@ -58,9 +58,8 @@ class Config:
     # Cache settings
     CACHE_ENABLED = True
     CACHE_TTL = timedelta(days=7)
-    MAX_CACHE_SIZE_MB = 1024  # 1GB
     
-# WebSocket settings
+    # WebSocket settings
     WS_HOST = os.getenv("CODESAGE_WS_HOST", "localhost")
     WS_PORT = int(os.getenv("CODESAGE_WS_PORT", "8765"))
     WS_PING_INTERVAL = int(os.getenv("CODESAGE_WS_PING_INTERVAL", "30"))
@@ -86,6 +85,7 @@ class Config:
         cls.CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cls.MODEL_DIR.mkdir(parents=True, exist_ok=True)
         cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        cls.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         
         # Initialize logging
         cls.setup_logging()
@@ -154,13 +154,11 @@ class Config:
                 "temperature": self.MODEL_TEMPERATURE
             },
             "files": {
-                "max_size_mb": self.MAX_FILE_SIZE_MB,
                 "allowed_extensions": list(self.ALLOWED_EXTENSIONS)
             },
             "cache": {
                 "enabled": self.CACHE_ENABLED,
-                "ttl_days": self.CACHE_TTL.days,
-                "max_size_mb": self.MAX_CACHE_SIZE_MB
+                "ttl_days": self.CACHE_TTL.days
             }
         }
 
@@ -192,7 +190,7 @@ config_by_name = {
 }
 
 # Active configuration
-active_config = config_by_name[os.getenv("CODESAGE_ENV", "production")]
+active_config = config_by_name[os.getenv("CODESAGE_ENV", "development")]
 
 # Initialize configuration
 active_config.initialize()

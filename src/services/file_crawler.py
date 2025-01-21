@@ -1,4 +1,3 @@
- 
 # Path: codeSage.be/src/services/file_crawler.py
 
 import os
@@ -32,14 +31,11 @@ class FileCrawler:
     and content analysis capabilities.
     """
 
-    def __init__(self, max_file_size_mb: int = 10):
+    def __init__(self):
         """
-        Initialize the FileCrawler with configuration parameters.
-
-        Args:
-            max_file_size_mb: Maximum file size to process in megabytes
+        Initialize the FileCrawler service.
+        No artificial size limits - system resources are the only constraint.
         """
-        self.max_file_size = max_file_size_mb * 1024 * 1024  # Convert to bytes
         self.binary_extensions = {
             '.pyc', '.pyo', '.so', '.dll', '.dylib', '.jar', '.war',
             '.ear', '.class', '.exe', '.pkl', '.bin', '.dat', '.db',
@@ -198,10 +194,6 @@ class FileCrawler:
                     if file_extensions and os.path.splitext(file)[1].lower() not in file_extensions:
                         continue
                         
-                    if os.path.getsize(file_path) > self.max_file_size:
-                        logger.warning(f"Skipping large file: {file_path}")
-                        continue
-                        
                     future_to_path[executor.submit(process_file, file_path)] = file_path
 
             for future in as_completed(future_to_path):
@@ -234,7 +226,7 @@ class FileCrawler:
             ext = metadata.extension
             extensions[ext] = extensions.get(ext, 0) + 1
             
-            # Simple language detection based on extension
+            # Language detection based on extension
             if ext in {'.py', '.pyw'}:
                 languages.add('Python')
             elif ext in {'.js', '.jsx', '.ts', '.tsx'}:
